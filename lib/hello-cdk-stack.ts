@@ -1,6 +1,14 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import {aws_codebuild, aws_codecommit, aws_codepipeline, aws_codepipeline_actions, aws_ec2, aws_s3} from "aws-cdk-lib";
+import {
+  aws_codebuild,
+  aws_codecommit,
+  aws_codepipeline,
+  aws_codepipeline_actions,
+  aws_ec2,
+  aws_elasticbeanstalk,
+  aws_s3
+} from "aws-cdk-lib";
 
 export class HelloCdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -11,7 +19,7 @@ export class HelloCdkStack extends cdk.Stack {
       description: 'my app made with python'
     });
 
-    const CodeBuildProject = new aws_codebuild.Project(this, 'CodeCommitRepoBuild',{
+    const codeBuildProject = new aws_codebuild.Project(this, 'CodeCommitRepoBuild',{
       // secondarySources: [
       //     aws_codebuild.Source.codeCommit({
       //       identifier: 'myAppPy',
@@ -25,9 +33,26 @@ export class HelloCdkStack extends cdk.Stack {
     });
 
 
-    const CodeBucket = new aws_s3.Bucket(this, 'kekeBucketPy', {
+    const codeBucket = new aws_s3.Bucket(this, 'kekeBucketPy', {
       versioned: true,
     });
+
+    const ElasticApplication = new elasticbeanstalk.CfnApplication(stack, 'ElasticApplication', {
+      applicationName: 'MyAppPy',
+    });
+
+    const elasticBeanstalkCode = new aws_elasticbeanstalk.CfnEnvironment(
+        this,
+        'AppPythonEnvironment',{
+          environmentName: 'MyPythonEnvironment',
+          applicationName: ElasticApplication.applicationName!,
+          optionSettings: [{
+            namespace: 'namespace',
+            optionName: 'optionName'
+          }],
+          versionLabel: productionVersion,
+    } );
+
 
 
     const pipelineSourceArtifact = new aws_codepipeline.Artifact();
@@ -36,7 +61,7 @@ export class HelloCdkStack extends cdk.Stack {
     //
     const pipelineSourceAction = new aws_codepipeline_actions.S3SourceAction({
       actionName: 'S3Source',
-      bucket: CodeBucket,
+      bucket: codeBucket,
       bucketKey: 'path/to/source.txt',
       output: pipelineSourceArtifact,
     });
@@ -62,7 +87,7 @@ export class HelloCdkStack extends cdk.Stack {
               new aws_codepipeline_actions.CodeBuildAction({
                 actionName: 'Build',
                 input: pipelineSourceArtifact,
-                project: CodeBuildProject,
+                project: codeBuildProject,
                 outputs: [pipelineBuildArtifact],
               }),
           ],
@@ -74,7 +99,7 @@ export class HelloCdkStack extends cdk.Stack {
                 actionName: 'Deploy',
                 input: pipelineSourceArtifact,
                 objectKey: `${pipelineSourceAction.variables.versionId}.txt`,
-                bucket: CodeBucket
+                bucket: codeBucket
               }),
           ],
         },
