@@ -1,15 +1,17 @@
 import * as cdk from 'aws-cdk-lib';
-import { Construct } from 'constructs';
-import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import * as path from 'path';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import {
   aws_codebuild as codebuild,
   aws_codecommit as codecommit,
   aws_codepipeline as codepipeline,
-  aws_codepipeline_actions as codepipeline_actions,
+  aws_codepipeline_actions as codepipeline_actions, aws_elasticbeanstalk,
   aws_elasticbeanstalk as elasticbeanstalk,
-  aws_s3 as s3, aws_s3_deployment
+  aws_s3 as s3t, aws_s3_deployment
 } from 'aws-cdk-lib';
+import * as s3 from '@aws-cdk/aws-s3';
+import {Construct} from "constructs";
+
 
 export class HelloCdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -21,48 +23,56 @@ export class HelloCdkStack extends cdk.Stack {
       description: 'my app made with python'
     });
 
-    // Projeto CodeBuild
+
     const codeBuildProject = new codebuild.Project(this, 'CodeCommitRepoBuild', {
-      source: codebuild.Source.codeCommit({
-        repository: codeCommitRepository,
-      }),
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version:'0.2',
+        phases:{
+          build:{
+            commands:['zip -r code.zip .',]
+          }
+        },
+        artifacts: {
+          'files':[
+              'code.zip'
+          ],
+        }
+      })
     });
 
-    // Bucket S3
-    const codeBucket = new s3.Bucket(this, 'kekeBucketPy', {
-      versioned: true,
-    });
-
-    //------------------------------------
-
-    // Aplicação Elastic Beanstalk
-    const elasticApplication = new elasticbeanstalk.CfnApplication(this, 'ElasticApplication', {
-      applicationName: 'MyAppPy'
-    });
 
     // Bucket S3 para o pacote do aplicativo elastic
-    const appBucket = new s3.Bucket(this, 'AppBucket');
+    // const appSource = ;
+    // const fileName = 'code.zip';
 
-    // @ts-ignore
-    const appSource = s3deploy.Source.asset(this, 'appAsset', {
-      path:path.join(__dirname, '../cdk-hnb659fds-assets-471112743502-sa-east-1/packageAsset/package.zip')
+    // Bucket S3
+    const codeBucket = new s3t.Bucket(this, 'KekeB', {
+      versioned: true
     });
 
 
-    // Deploy do pacote para o bucket S3
-    // new s3deploy.BucketDeployment(this, 'AppDeployment', {
-    //   sources: [appSource],
-    //   destinationBucket: appBucket
-    // });
+    const appBucketVersion = new s3deploy.BucketDeployment(this, 'AppDeployment', {
+      sources: [s3deploy.Source.asset('./assets')],
+      destinationBucket: codeBucket,
+      destinationKeyPrefix: 'code/',
+    });
+
+
+    const elasticApplication = new elasticbeanstalk.CfnApplication(this,'ElasticAplication',{
+      applicationName:'MyApp'
+    });
 
     // Versão do  Elastic Beanstalk
     const appVersion = new elasticbeanstalk.CfnApplicationVersion(this, 'AppVersion', {
       applicationName: elasticApplication.applicationName!,
-      // sourceBundle: {
-      //   s3Bucket: appBucket.bucketName,
-      //   // s3Key: appSource.s3ObjectKey ?? ''
-      // }
+      sourceBundle: {
+        s3Bucket: codeBucket.bucketName,
+        s3Key: 'code/code.zip'
+      }
     });
+
+    appVersion.node.addDependency(appBucketVersion);
+
 
     // Ambiente Elastic Beanstalk
     const elasticBeanstalkEnvironment = new elasticbeanstalk.CfnEnvironment(this, 'AppPythonEnvironment', {
@@ -74,50 +84,70 @@ export class HelloCdkStack extends cdk.Stack {
         optionName: 'EnvironmentType',
         value: 'SingleInstance'
       }],
-      versionLabel: v1, // Substituir pela versão apropriado
+      versionLabel: appVersion.ref, // Substituir pela versão apropriado
     });
 
     // Artefatos do CodePipeline
-    const pipelineSourceArtifact = new codepipeline.Artifact();
-    const pipelineBuildArtifact = new codepipeline.Artifact();
+
+    const s3Artifact = new codepipeline.Artifact('S3Artifact');
+    const codeCommitArtifact = new codepipeline.Artifact('CodeCommitArtifact');
+    const buildOutput = new codepipeline.Artifact('BuildOutput');
+    const eBArtifact = new codepipeline.Artifact('EBArtifact');
+    // const pipelineBuildArtifact = new codepipeline.Artifact('BuildOutput');
+
 
     // Pipeline CodePipeline
     const pyPipeline = new codepipeline.Pipeline(this, 'Pipeline', {
       pipelineName: 'py-pipe',
-      stages: [
-        {
-          stageName: 'Source',
-          actions: [
-            new codepipeline_actions.CodeCommitSourceAction({
-              actionName: 'Source',
-              repository: codeCommitRepository,
-              output: pipelineSourceArtifact,
-            }),
-          ],
-        },
-        {
-          stageName: 'Build',
-          actions: [
-            new codepipeline_actions.CodeBuildAction({
-              actionName: 'Build',
-              input: pipelineSourceArtifact,
-              project: codeBuildProject,
-              outputs: [pipelineBuildArtifact],
-            }),
-          ],
-        },
-        {
-          stageName: 'Deploy',
-          actions: [
-            new codepipeline_actions.S3DeployAction({
-              actionName: 'Deploy',
-              input: pipelineBuildArtifact,
-              bucket: codeBucket,
-              objectKey: 'deploy.zip',
-            }),
-          ],
-        },
+      crossAccountKeys: false,
+    });
+
+    const sourceS3Stage = pyPipeline.addStage({
+      stageName: 'Source',
+      actions: [
+        new codepipeline_actions.S3SourceAction({
+          actionName: 'S3Source',
+          bucket: codeBucket,
+          bucketKey: 'code/code.zip',
+          output:  s3Artifact
+        }),
+        new codepipeline_actions.CodeCommitSourceAction({
+          actionName: 'CodeCommitSource',
+          repository: codeCommitRepository,
+          output: codeCommitArtifact
+        }),
       ],
+    });
+
+    const BuildStage = pyPipeline.addStage({
+      stageName: 'Build',
+      actions: [
+        new codepipeline_actions.CodeBuildAction({
+          actionName: 'BuildFromS3',
+          input: s3Artifact,
+          project: codeBuildProject,
+          outputs: [ new codepipeline.Artifact('S3BuildOutput')],
+
+        }),
+        new codepipeline_actions.CodeBuildAction({
+          actionName: 'BuildProject',
+          input: new codepipeline.Artifact('BuildOutput'),
+          project: codeBuildProject,
+          outputs: [buildOutput]
+        })
+      ]
+    });
+
+    const DeployStage = pyPipeline.addStage({
+      stageName: 'Deploy',
+      actions: [
+        new codepipeline_actions.ElasticBeanstalkDeployAction({
+          actionName:'ElasticBeanstalkDeploy',
+          applicationName:elasticApplication.applicationName!,
+          environmentName: elasticBeanstalkEnvironment.environmentName!,
+          input: buildOutput
+        })
+      ]
     });
   }
 }
